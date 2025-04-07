@@ -144,85 +144,132 @@ public class MqttService extends TextWebSocketHandler {
 
     public EspDevices handleMqttMessage(String topic, String message) {
         if (topic == null || message == null) {
+            System.out.println("⚠️ Null topic or message received");
             return null;
         }
-
-        if ("deleteNVS".equals(message)) {
-            String[] parts = topic.split("/");
-            if (parts.length >= 3) {
-                String deviceId = parts[2];
-                espDevicesServices.deleteDevice(deviceId);
-            }
-            return null;
-        }
-
+    
+        String deviceId = extractDeviceIdFromTopic(topic);
+        EspDevices device = (deviceId != null) ? espDevicesServices.getDeviceById(deviceId) : null;
+    
+        // Handle special topics first
         if (DEFAULT_TOPIC_1.equals(topic)) {
-            try {
-                String[] msgParts = message.split("/");
-                if (msgParts.length < 3) {
-                    System.out.println("⚠️ Invalid message format: " + message);
-                    return null;
+            return handleNewDeviceRegistration(message);
+        } else if (DEFAULT_TOPIC_2.equals(topic)) {
+            handleGlobalStateChange(message);
+            return null;
+        }
+    
+        // Handle device-specific commands
+        if (deviceId == null) {
+            System.out.println("❓ Invalid topic format: " + topic);
+            return null;
+        }
+    
+        if (device == null && !"deleteNVS".equals(message)) {
+            System.out.println("⚠️ Device not found for ID: " + deviceId);
+            return null;
+        }
+    
+        try {
+            if ("deleteNVS".equals(message)) {
+                if (device != null) {
+                    espDevicesServices.deleteDevice(deviceId);
+                    System.out.println("✅ Deleted device with ID: " + deviceId);
+                } else {
+                    System.out.println("⚠️ Device already deleted or not found for ID: " + deviceId);
                 }
-
-                String deviceId = msgParts[2];
-                System.out.println("📥 New device notification received. Device ID: " + deviceId);
-
-                EspDevices existingDevice = espDevicesServices.getDeviceById(deviceId);
-                if (existingDevice != null) {
-                    System.out.println("✅ Device already exists: " + existingDevice.getDeviceId());
-                    return null;
-                }
-
-                EspDevices newDevice = new EspDevices();
-                newDevice.setDeviceId(deviceId);
-                newDevice.setName("ESP_" + deviceId);
-                newDevice.setLightOn(false);
-                newDevice.setRGBMode(false);
-                newDevice.setCommandTopic("/devices/" + deviceId + "/command");
-
-                EspDevices savedDevice = espDevicesServices.addDevice(newDevice);
-                System.out.println("✅ Device added: " + savedDevice.getDeviceId() + " - " + savedDevice.getName());
-                subscribeToDeviceTopic(savedDevice.getCommandTopic());
-                return savedDevice;
-            } catch (Exception e) {
-                System.err.println("❌ Error while adding device: " + e.getMessage());
-                e.printStackTrace();
                 return null;
+            } else if (message.startsWith("name/")) {
+                return handleNameChange(device, message, deviceId);
+            } else {
+                return handleDeviceStateChange(device, message, deviceId);
             }
+        } catch (Exception e) {
+            System.err.println("❌ Error processing message '" + message + "' for topic " + topic + ": " + e.getMessage());
+            return null;
         }
-
-        EspDevices device = espDevicesServices.getAllDevices().stream()
-                .filter(d -> topic.equals(d.getCommandTopic()))
-                .findFirst()
-                .orElse(null);
-
-        if (device != null) {
-            if ("on".equals(message)) {
-                device.setLightOn(true);
-                espDevicesServices.updateDevice(device);
-            } else if ("off".equals(message)) {
-                device.setLightOn(false);
-                espDevicesServices.updateDevice(device);
-            } else if ("onRGB".equals(message)) {
-                device.setRGBMode(true);
-                espDevicesServices.updateDevice(device);
-            } else if ("offRGB".equals(message)) {
-                device.setRGBMode(false);
-                espDevicesServices.updateDevice(device);
-            }
+    }
+    
+    private String extractDeviceIdFromTopic(String topic) {
+        String[] parts = topic.split("/");
+        return (parts.length >= 3) ? parts[2] : null;
+    }
+    
+    private EspDevices handleNewDeviceRegistration(String message) {
+        String[] msgParts = message.split("/");
+        if (msgParts.length < 3) {
+            System.out.println("⚠️ Invalid message format: " + message);
+            return null;
+        }
+    
+        String deviceId = msgParts[2];
+        System.out.println("📥 New device notification received. Device ID: " + deviceId);
+    
+        EspDevices existingDevice = espDevicesServices.getDeviceById(deviceId);
+        if (existingDevice != null) {
+            System.out.println("✅ Device already exists: " + existingDevice.getDeviceId());
+            return null;
+        }
+    
+        EspDevices newDevice = new EspDevices();
+        newDevice.setDeviceId(deviceId);
+        newDevice.setName("ESP_" + deviceId);
+        newDevice.setLightOn(false);
+        newDevice.setRGBMode(false);
+        newDevice.setCommandTopic("/devices/" + deviceId + "/command");
+    
+        EspDevices savedDevice = espDevicesServices.addDevice(newDevice);
+        System.out.println("✅ Device added: " + savedDevice.getDeviceId() + " - " + savedDevice.getName());
+        subscribeToDeviceTopic(savedDevice.getCommandTopic());
+        return savedDevice;
+    }
+    
+    private void handleGlobalStateChange(String message) {
+        if ("turn on".equals(message)) {
+            // espDevicesServices.updateStateLight(true);
+            System.out.println("🔆 Global turn on command received");
+        } else if ("turn off".equals(message)) {
+            // espDevicesServices.updateStateLight(false);
+            System.out.println("🌙 Global turn off command received");
+        } else {
+            System.out.println("❓ Unknown global command: " + message);
+        }
+    }
+    
+    private EspDevices handleNameChange(EspDevices device, String message, String deviceId) {
+        String[] parts = message.split("/", 2);
+        if (parts.length == 2 && !parts[1].isEmpty()) {
+            device.setName(parts[1]);
+            espDevicesServices.updateDevice(device);
+            System.out.println("✅ Updated device name to: " + device.getName() + " for ID: " + deviceId);
             return device;
+        } else {
+            System.out.println("⚠️ Invalid name format: " + message);
+            return null;
         }
-
-        if (DEFAULT_TOPIC_2.equals(topic)) {
-            if ("turn on".equals(message)) {
-                // espDevicesServices.updateStateLight(true);
-            } else if ("turn off".equals(message)) {
-                // espDevicesServices.updateStateLight(false);
-            }
+    }
+    
+    private EspDevices handleDeviceStateChange(EspDevices device, String message, String deviceId) {
+        switch (message) {
+            case "on":
+                device.setLightOn(true);
+                break;
+            case "off":
+                device.setLightOn(false);
+                break;
+            case "onRGB":
+                device.setRGBMode(true);
+                break;
+            case "offRGB":
+                device.setRGBMode(false);
+                break;
+            default:
+                System.out.println("❓ Unknown command: " + message + " for device: " + deviceId);
+                return null;
         }
-
-        System.out.println("❓ Unknown topic received: " + topic);
-        return null;
+        espDevicesServices.updateDevice(device);
+        System.out.println("✅ Updated device " + deviceId + ": LightOn=" + device.isLightOn() + ", RGBMode=" + device.isRGBMode());
+        return device;
     }
 
     public EspDevices handleVoiceCommandPublic(String command) {
