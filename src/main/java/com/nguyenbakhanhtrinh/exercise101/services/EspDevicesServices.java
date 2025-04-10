@@ -62,4 +62,12 @@ public class EspDevicesServices {
             repository.save(device);
         });
     }
+
+    public void updateStateLight(Boolean status){
+        List<EspDevices> devices = repository.findAll();
+        for (EspDevices device : devices) {
+            device.setLightOn(status);
+            repository.save(device);
+        }
+    }
 }

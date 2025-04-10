@@ -112,7 +112,6 @@ public class MqttService extends TextWebSocketHandler {
         }
     }
 
-
     private void subscribeToDeviceTopic(String topic) {
         if (mqttClient == null || !mqttClient.isConnected()) {
             System.out.println("MQTT Client is not connected. Cannot subscribe to topic: " + topic);
@@ -122,7 +121,7 @@ public class MqttService extends TextWebSocketHandler {
                 return;
             }
         }
-    
+
         try {
             mqttClient.subscribe(topic, qos);
             System.out.println("✅ Subscribed to new topic: " + topic);
@@ -147,10 +146,10 @@ public class MqttService extends TextWebSocketHandler {
             System.out.println("⚠️ Null topic or message received");
             return null;
         }
-    
+
         String deviceId = extractDeviceIdFromTopic(topic);
         EspDevices device = (deviceId != null) ? espDevicesServices.getDeviceById(deviceId) : null;
-    
+
         // Handle special topics first
         if (DEFAULT_TOPIC_1.equals(topic)) {
             return handleNewDeviceRegistration(message);
@@ -158,18 +157,18 @@ public class MqttService extends TextWebSocketHandler {
             handleGlobalStateChange(message);
             return null;
         }
-    
+
         // Handle device-specific commands
         if (deviceId == null) {
             System.out.println("❓ Invalid topic format: " + topic);
             return null;
         }
-    
+
         if (device == null && !"deleteNVS".equals(message)) {
             System.out.println("⚠️ Device not found for ID: " + deviceId);
             return null;
         }
-    
+
         try {
             if ("deleteNVS".equals(message)) {
                 if (device != null) {
@@ -189,53 +188,81 @@ public class MqttService extends TextWebSocketHandler {
             return null;
         }
     }
-    
+
     private String extractDeviceIdFromTopic(String topic) {
         String[] parts = topic.split("/");
         return (parts.length >= 3) ? parts[2] : null;
     }
-    
+
     private EspDevices handleNewDeviceRegistration(String message) {
         String[] msgParts = message.split("/");
         if (msgParts.length < 3) {
             System.out.println("⚠️ Invalid message format: " + message);
             return null;
         }
-    
+
         String deviceId = msgParts[2];
         System.out.println("📥 New device notification received. Device ID: " + deviceId);
-    
+
         EspDevices existingDevice = espDevicesServices.getDeviceById(deviceId);
         if (existingDevice != null) {
             System.out.println("✅ Device already exists: " + existingDevice.getDeviceId());
             return null;
         }
-    
+
         EspDevices newDevice = new EspDevices();
         newDevice.setDeviceId(deviceId);
         newDevice.setName("ESP_" + deviceId);
         newDevice.setLightOn(false);
         newDevice.setRGBMode(false);
         newDevice.setCommandTopic("/devices/" + deviceId + "/command");
-    
+
         EspDevices savedDevice = espDevicesServices.addDevice(newDevice);
         System.out.println("✅ Device added: " + savedDevice.getDeviceId() + " - " + savedDevice.getName());
         subscribeToDeviceTopic(savedDevice.getCommandTopic());
         return savedDevice;
     }
-    
+
     private void handleGlobalStateChange(String message) {
         if ("turn on".equals(message)) {
-            // espDevicesServices.updateStateLight(true);
+            espDevicesServices.updateStateLight(true); // Update all devices' light state
             System.out.println("🔆 Global turn on command received");
+            
+            // Fetch all devices and update them individually
+            List<EspDevices> allDevices = espDevicesServices.getAllDevices();
+            for (EspDevices device : allDevices) {
+                device.setLightOn(true); // Update in-memory state
+                espDevicesServices.updateDevice(device); // Persist to database
+                sendMessageToClients(device); // Notify WebSocket clients
+                try {
+                    publishMessage("on", device.getCommandTopic()); // Send MQTT command to each device
+                    System.out.println("✅ Sent 'on' to " + device.getDeviceId());
+                } catch (MqttException e) {
+                    System.out.println("❌ Failed to publish 'on' to " + device.getDeviceId() + ": " + e.getMessage());
+                }
+            }
         } else if ("turn off".equals(message)) {
-            // espDevicesServices.updateStateLight(false);
+            espDevicesServices.updateStateLight(false); // Update all devices' light state
             System.out.println("🌙 Global turn off command received");
+            
+            // Fetch all devices and update them individually
+            List<EspDevices> allDevices = espDevicesServices.getAllDevices();
+            for (EspDevices device : allDevices) {
+                device.setLightOn(false); // Update in-memory state
+                espDevicesServices.updateDevice(device); // Persist to database
+                sendMessageToClients(device); // Notify WebSocket clients
+                try {
+                    publishMessage("off", device.getCommandTopic()); // Send MQTT command to each device
+                    System.out.println("✅ Sent 'off_stubborn to " + device.getDeviceId());
+                } catch (MqttException e) {
+                    System.out.println("❌ Failed to publish 'off' to " + device.getDeviceId() + ": " + e.getMessage());
+                }
+            }
         } else {
             System.out.println("❓ Unknown global command: " + message);
         }
     }
-    
+
     private EspDevices handleNameChange(EspDevices device, String message, String deviceId) {
         String[] parts = message.split("/", 2);
         if (parts.length == 2 && !parts[1].isEmpty()) {
@@ -248,27 +275,35 @@ public class MqttService extends TextWebSocketHandler {
             return null;
         }
     }
-    
+
     private EspDevices handleDeviceStateChange(EspDevices device, String message, String deviceId) {
         switch (message) {
             case "on":
+                espDevicesServices.turnOnLight(deviceId); // Use non-persisting method
                 device.setLightOn(true);
                 break;
             case "off":
+                espDevicesServices.turnOffLight(deviceId); // Use non-persisting method
                 device.setLightOn(false);
                 break;
             case "onRGB":
+                espDevicesServices.setRgbMode(deviceId, true); // Use non-persisting method
                 device.setRGBMode(true);
                 break;
             case "offRGB":
+                espDevicesServices.setRgbMode(deviceId, false); // Use non-persisting method
                 device.setRGBMode(false);
+                break;
+            case "deleteNVS":
+                espDevicesServices.deleteDevice(deviceId);
+                System.out.println("✅ Deleted device with ID: " + deviceId);
                 break;
             default:
                 System.out.println("❓ Unknown command: " + message + " for device: " + deviceId);
                 return null;
         }
-        espDevicesServices.updateDevice(device);
-        System.out.println("✅ Updated device " + deviceId + ": LightOn=" + device.isLightOn() + ", RGBMode=" + device.isRGBMode());
+        // Không gọi updateDevice để tránh lưu vào database
+        System.out.println("✅ Updated device " + deviceId + " (in-memory): LightOn=" + device.isLightOn() + ", RGBMode=" + device.isRGBMode());
         return device;
     }
 
@@ -333,7 +368,7 @@ public class MqttService extends TextWebSocketHandler {
                 System.out.println("Unknown voice command: " + command);
                 return null;
         }
-        espDevicesServices.updateDevice(device);
+        // Không gọi updateDevice để tránh lưu vào database
         return device;
     }
 

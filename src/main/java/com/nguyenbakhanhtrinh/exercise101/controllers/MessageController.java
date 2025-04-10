@@ -51,23 +51,4 @@ public class MessageController {
         }
     }
 
-    @PostMapping("/voice-command")
-    public ResponseEntity<?> sendVoiceCommand(@RequestParam String command) {
-        if (!mqttService.isMqttConnected()) {
-            return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
-                    .body("MQTT is not connected. Try again later.");
-        }
-
-        try {
-            // Gọi phương thức mới trong MqttService để xử lý voice command và trả về EspDevices
-            EspDevices updatedDevice = mqttService.handleVoiceCommandPublic(command);
-            if (updatedDevice != null) {
-                return ResponseEntity.ok("Voice command sent: " + command + ", Device updated: " + updatedDevice.getDeviceId());
-            }
-            return ResponseEntity.ok("Voice command sent: " + command);
-        } catch (Exception e) {
-            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
-                    .body("Failed to send voice command: " + e.getMessage());
-        }
-    }
 }
